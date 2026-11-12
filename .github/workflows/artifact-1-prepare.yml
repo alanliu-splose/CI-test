@@ -1,0 +1,43 @@
+name: "Artifact · 1 Prepare → Staging"
+
+on:
+  workflow_dispatch:
+    inputs:
+      services:
+        description: 'Optional comma list (server,frontend,public-api). Blank = from the diff.'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    uses: ./.github/workflows/prepare.yml
+    with:
+      services: ${{ inputs.services }}
+
+  release-json:
+    name: Save release.json
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          COMMIT: ${{ needs.prepare.outputs.commit }}
+          BASE: ${{ needs.prepare.outputs.base }}
+          SERVICES: ${{ needs.prepare.outputs.services }}
+        run: |
+          jq -n --arg commit "$COMMIT" --arg base "$BASE" --arg services "$SERVICES" --arg run "$GITHUB_RUN_ID" \
+            '{stage:"staging", commit:$commit, base:$base, services:$services, prepare_run:$run}' > release.json
+          cat release.json
+          {
+            echo "### Next: QA approves"
+            echo "Run **Artifact · 2 QA approve → Demo** with \`run_id = $GITHUB_RUN_ID\`"
+            echo '```'
+            echo "gh workflow run artifact-2-demo.yml -R $GITHUB_REPOSITORY -f run_id=$GITHUB_RUN_ID"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release.json

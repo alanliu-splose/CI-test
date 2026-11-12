@@ -1,0 +1,47 @@
+name: "Artifact · 3 Eng approve → Prod"
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run id of "Artifact · 2 QA approve → Demo"'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: prod
+  cancel-in-progress: false
+
+jobs:
+  load:
+    name: Load release.json
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.r.outputs.commit }}
+      base: ${{ steps.r.outputs.base }}
+      services: ${{ steps.r.outputs.services }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - id: r
+        run: |
+          cat release.json
+          stage=$(jq -r .stage release.json)
+          if [ "$stage" != "demo" ]; then
+            echo "::error::run ${{ inputs.run_id }} is at stage '$stage': prod needs a Demo run, so QA approve can't be skipped"; exit 1
+          fi
+          for k in commit base services; do echo "$k=$(jq -r .$k release.json)" >> "$GITHUB_OUTPUT"; done
+
+  prod:
+    needs: load
+    uses: ./.github/workflows/prod.yml
+    with:
+      commit: ${{ needs.load.outputs.commit }}
+      base: ${{ needs.load.outputs.base }}
+      services: ${{ needs.load.outputs.services }}

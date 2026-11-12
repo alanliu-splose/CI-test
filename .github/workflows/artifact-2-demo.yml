@@ -1,0 +1,68 @@
+name: "Artifact · 2 QA approve → Demo"
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: 'Run id of "Artifact · 1 Prepare → Staging"'
+        required: true
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  load:
+    name: Load release.json
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.r.outputs.commit }}
+      base: ${{ steps.r.outputs.base }}
+      services: ${{ steps.r.outputs.services }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: release
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ github.token }}
+      - id: r
+        run: |
+          cat release.json
+          stage=$(jq -r .stage release.json)
+          if [ "$stage" != "staging" ]; then
+            echo "::error::run ${{ inputs.run_id }} is at stage '$stage', expected a Prepare run"; exit 1
+          fi
+          for k in commit base services; do echo "$k=$(jq -r .$k release.json)" >> "$GITHUB_OUTPUT"; done
+
+  demo:
+    needs: load
+    uses: ./.github/workflows/demo.yml
+    with:
+      commit: ${{ needs.load.outputs.commit }}
+      services: ${{ needs.load.outputs.services }}
+
+  release-json:
+    name: Save release.json
+    needs: [load, demo]
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          COMMIT: ${{ needs.load.outputs.commit }}
+          BASE: ${{ needs.load.outputs.base }}
+          SERVICES: ${{ needs.load.outputs.services }}
+          PREPARE_RUN: ${{ inputs.run_id }}
+        run: |
+          jq -n --arg commit "$COMMIT" --arg base "$BASE" --arg services "$SERVICES" --arg prep "$PREPARE_RUN" --arg run "$GITHUB_RUN_ID" \
+            '{stage:"demo", commit:$commit, base:$base, services:$services, prepare_run:$prep, demo_run:$run}' > release.json
+          cat release.json
+          {
+            echo "### Next: Eng approves"
+            echo "Run **Artifact · 3 Eng approve → Prod** with \`run_id = $GITHUB_RUN_ID\`"
+            echo '```'
+            echo "gh workflow run artifact-3-prod.yml -R $GITHUB_REPOSITORY -f run_id=$GITHUB_RUN_ID"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release
+          path: release.json

@@ -1,0 +1,85 @@
+name: Prepare (called)
+
+on:
+  workflow_call:
+    inputs:
+      services:
+        description: 'Comma list. Blank = worked out from the base..head diff.'
+        type: string
+        default: ''
+    outputs:
+      commit:
+        value: ${{ jobs.prepare.outputs.commit }}
+      base:
+        value: ${{ jobs.prepare.outputs.base }}
+      services:
+        value: ${{ jobs.prepare.outputs.services }}
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.p.outputs.commit }}
+      base: ${{ steps.p.outputs.base }}
+      services: ${{ steps.p.outputs.services }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: p
+        name: Work out commit, base and services
+        env:
+          INPUT_SERVICES: ${{ inputs.services }}
+          PROD_COMMIT: ${{ vars.PROD_COMMIT }}
+        run: |
+          commit=$(git rev-parse HEAD)
+          # Real flow: newest green main commit, and base = the commit prod runs (read from health-check).
+          base=${PROD_COMMIT:-$(git rev-parse HEAD~1)}
+          if [ -n "$INPUT_SERVICES" ]; then
+            services=$INPUT_SERVICES; source="input"
+          else
+            services=$(git diff --name-only "$base" "$commit" | awk -F/ '
+              $1=="packages" && $2=="server"     {print "server"}
+              $1=="packages" && $2=="web-app"    {print "frontend"}
+              $1=="packages" && $2=="public-api" {print "public-api"}
+            ' | sort -u | paste -sd, -)
+            source="diff ${base:0:7}..${commit:0:7}"
+          fi
+          if [ -z "$services" ]; then
+            echo "::error::No deployable change between base and head. Fill services to force one."; exit 1
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+          echo "services=$services" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Prepare"
+            echo "| param | value |"
+            echo "|---|---|"
+            echo "| commit | \`$commit\` |"
+            echo "| base | \`$base\` |"
+            echo "| services | \`$services\` (from $source) |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  tofu-plan:
+    name: Tofu plan
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Tofu plan ${{ needs.prepare.outputs.commit }} for production-au, production-uk (simulated)"
+
+  note:
+    name: Deployment note
+    needs: prepare
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Deployment note for ${{ needs.prepare.outputs.base }}..${{ needs.prepare.outputs.commit }}, services=${{ needs.prepare.outputs.services }} (simulated)"
+
+  staging:
+    name: Staging + red-devil
+    needs: [prepare, tofu-plan, note]
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "Deploy ${{ needs.prepare.outputs.commit }} to staging + red-devil (simulated)"
+          echo "Dispatch regression-run.yml (simulated)"

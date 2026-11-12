@@ -1,0 +1,98 @@
+name: "Issue · gate (/qa-approve, /eng-approve)"
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: release-issue-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  route:
+    name: Read command
+    if: >-
+      github.event.issue.state == 'open' &&
+      contains(github.event.issue.labels.*.name, 'release') &&
+      (startsWith(github.event.comment.body, '/qa-approve') || startsWith(github.event.comment.body, '/eng-approve'))
+    runs-on: ubuntu-latest
+    outputs:
+      gate: ${{ steps.r.outputs.gate }}
+      commit: ${{ steps.r.outputs.commit }}
+      base: ${{ steps.r.outputs.base }}
+      services: ${{ steps.r.outputs.services }}
+    steps:
+      - id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          ASSOCIATION: ${{ github.event.comment.author_association }}
+          QA_CMD: ${{ startsWith(github.event.comment.body, '/qa-approve') }}
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
+        run: |
+          reject() { gh issue comment "$NUMBER" --body "⛔ $1"; echo "::error::$1"; exit 1; }
+          case "$ASSOCIATION" in OWNER|MEMBER|COLLABORATOR) ;; *) reject "Only repo members can approve.";; esac
+          if [ "$QA_CMD" = true ]; then gate=qa; else gate=eng; fi
+          case ",$LABELS," in *,qa-approved,*) qa=1;; *) qa=0;; esac
+          if [ $gate = qa ] && [ $qa = 1 ]; then reject "QA already approved. Next is \`/eng-approve\`."; fi
+          if [ $gate = eng ] && [ $qa = 0 ]; then reject "Prod needs \`/qa-approve\` and a demo first."; fi
+          gh api -X POST "repos/$GH_REPO/issues/comments/$COMMENT_ID/reactions" -f content=rocket >/dev/null
+          json=$(printf '%s' "$ISSUE_BODY" | sed -n 's/.*<!-- release:\(.*\) -->.*/\1/p' | head -1)
+          echo "gate=$gate" >> "$GITHUB_OUTPUT"
+          for k in commit base services; do echo "$k=$(jq -r .$k <<<"$json")" >> "$GITHUB_OUTPUT"; done
+
+  demo:
+    needs: route
+    if: needs.route.outputs.gate == 'qa'
+    uses: ./.github/workflows/demo.yml
+    with:
+      commit: ${{ needs.route.outputs.commit }}
+      services: ${{ needs.route.outputs.services }}
+
+  prod:
+    needs: route
+    if: needs.route.outputs.gate == 'eng'
+    uses: ./.github/workflows/prod.yml
+    with:
+      commit: ${{ needs.route.outputs.commit }}
+      base: ${{ needs.route.outputs.base }}
+      services: ${{ needs.route.outputs.services }}
+
+  report:
+    name: Report on issue
+    needs: [route, demo, prod]
+    if: always() && needs.route.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NUMBER: ${{ github.event.issue.number }}
+          GATE: ${{ needs.route.outputs.gate }}
+          DEMO: ${{ needs.demo.result }}
+          PROD: ${{ needs.prod.result }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ "$GATE" = qa ]; then
+            if [ "$DEMO" = success ]; then
+              gh issue edit "$NUMBER" --add-label qa-approved
+              gh issue comment "$NUMBER" --body "✅ Demo deployed ([run]($RUN)). Eng: comment \`/eng-approve\` to ship to prod."
+            else
+              gh issue comment "$NUMBER" --body "❌ Demo failed ([run]($RUN)). Fix and comment \`/qa-approve\` again."
+            fi
+          else
+            if [ "$PROD" = success ]; then
+              gh issue edit "$NUMBER" --add-label eng-approved
+              gh issue comment "$NUMBER" --body "🚀 Prod deployed ([run]($RUN))."
+              gh issue close "$NUMBER"
+            else
+              gh issue comment "$NUMBER" --body "❌ Prod run stopped ([run]($RUN)). If pre-flight failed (e.g. imports running), prod is untouched: ship the fix with Prod Hotfix, or comment \`/eng-approve\` again once it is clear."
+            fi
+          fi

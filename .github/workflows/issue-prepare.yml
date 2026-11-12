@@ -1,0 +1,167 @@
+name: "Issue · Prepare → Staging → open issue"
+
+on:
+  workflow_dispatch:
+
+defaults:
+  run:
+    shell: bash
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+
+jobs:
+  pick-commit:
+    name: Pick the commit
+    runs-on: ubuntu-26.04
+    outputs:
+      commit: ${{ steps.r.outputs.commit }}
+    steps:
+      - id: r
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Newest main commit with green CI (simulated) -> $GITHUB_SHA"
+          echo "commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+
+  find-base:
+    name: Find what prod runs
+    needs: pick-commit
+    runs-on: ubuntu-26.04
+    outputs:
+      base: ${{ steps.r.outputs.base }}
+    steps:
+      - id: r
+        env:
+          PROD_COMMIT: ${{ vars.PROD_COMMIT }}
+          COMMIT: ${{ needs.pick-commit.outputs.commit }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          base=${PROD_COMMIT:-$(gh api "repos/$GH_REPO/commits/$COMMIT" --jq '.parents[0].sha')}
+          say "GET https://acme.splose.com/api/health-check     (simulated) -> commit $base"
+          say "GET https://acme.uk.splose.com/api/health-check  (simulated) -> commit $base"
+          say "AU and UK match -> base = $base"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
+  services:
+    name: Work out services
+    needs: [pick-commit, find-base]
+    runs-on: ubuntu-26.04
+    outputs:
+      services: ${{ steps.r.outputs.services }}
+    steps:
+      - id: r
+        env:
+          COMMIT: ${{ needs.pick-commit.outputs.commit }}
+          BASE: ${{ needs.find-base.outputs.base }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Changed files ${BASE:0:7}..${COMMIT:0:7} -> service (deployment note path map):"
+          map=$(gh api "repos/$GH_REPO/compare/$BASE...$COMMIT" --jq '.files[].filename' | awk -F/ '
+            $1=="packages" && $2=="server"     {print $0 " -> server"}
+            $1=="packages" && $2=="web-app"    {print $0 " -> frontend"}
+            $1=="packages" && $2=="public-api" {print $0 " -> public-api"}')
+          say "$(echo "$map" | sed 's/^/  /')"
+          services=$(echo "$map" | awk '{print $NF}' | grep -v '^$' | sort -u | paste -sd, -)
+          if [ -z "$services" ]; then echo "::error::No deployable change between base and head."; exit 1; fi
+          say "services = ${services//,/, }"
+          echo "services=$services" >> "$GITHUB_OUTPUT"
+
+  tofu-plan:
+    name: Tofu plan
+    needs: services
+    runs-on: ubuntu-26.04
+    steps:
+      - run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          for ws in production-au-splose production-uk-splose production-au production-uk; do
+            say "tofu plan $ws (simulated) -> no changes"
+          done
+
+  note:
+    name: Deployment note
+    needs: [pick-commit, find-base, services, tofu-plan]
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          COMMIT: ${{ needs.pick-commit.outputs.commit }}
+          BASE: ${{ needs.find-base.outputs.base }}
+          SERVICES: ${{ needs.services.outputs.services }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Slack #deployments (simulated):"
+          say "  Deployment ${BASE:0:7}..${COMMIT:0:7}"
+          say "  Services: ${SERVICES//,/, }"
+
+  staging:
+    name: Staging + red-devil
+    needs: [services, note]
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          SERVICES: ${{ needs.services.outputs.services }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          for env in staging red-devil; do
+            for s in ${SERVICES//,/ }; do say "Deploy $s to $env (simulated) -> done"; done
+          done
+          say "regression-run.yml dispatched (simulated)"
+
+
+  open-issue:
+    name: Open release issue
+    needs: [pick-commit, find-base, services, staging]
+    runs-on: ubuntu-26.04
+    outputs:
+      number: ${{ steps.r.outputs.number }}
+    steps:
+      - id: r
+        env:
+          COMMIT: ${{ needs.pick-commit.outputs.commit }}
+          BASE: ${{ needs.find-base.outputs.base }}
+          SERVICES: ${{ needs.services.outputs.services }}
+        run: |
+          json=$(jq -n --arg commit "$COMMIT" --arg base "$BASE" --arg services "$SERVICES" --arg run "$GITHUB_RUN_ID" \
+            '{commit:$commit, base:$base, services:$services, prepare_run:$run}')
+          {
+            echo '```json'
+            echo "$json"
+            echo '```'
+            echo
+            echo "- [x] Prepare → Staging + red-devil"
+            echo "- [ ] QA approve → Demo: comment \`/qa-approve\`"
+            echo "- [ ] Eng approve → Prod: comment \`/eng-approve\` (\`/eng-approve fail-preflight\` simulates a failed pre-flight check)"
+            echo
+            echo "<!-- release:$(jq -c . <<<"$json") -->"
+          } > body.md
+          url=$(gh issue create --title "Release ${COMMIT:0:7}" --label release --body-file body.md)
+          echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
+          echo "$url"
+          echo "$json"
+          printf '%s\n\n```json\n%s\n```\n' "$url" "$json" >> "$GITHUB_STEP_SUMMARY"
+
+  notify-qa:
+    name: Notify QA
+    needs: [pick-commit, services, open-issue]
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          COMMIT: ${{ needs.pick-commit.outputs.commit }}
+          SERVICES: ${{ needs.services.outputs.services }}
+          NUMBER: ${{ needs.open-issue.outputs.number }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Slack #deployments (simulated)"
+          say "@qa Staging is ready: ${COMMIT:0:7} (${SERVICES//,/, }). Regression run started."
+          say "Approve by commenting /qa-approve on issue #$NUMBER."

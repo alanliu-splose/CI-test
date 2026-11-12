@@ -49,22 +49,14 @@ jobs:
           say "  commit    $(jq -r .commit release.json)"
           say "  base      $(jq -r .base release.json)"
           say "  services  $(jq -r '.services|gsub(",";", ")' release.json)"
+          say "Approved by $GITHUB_ACTOR (ran this workflow)"
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           for k in commit base services; do echo "$k=$(jq -r .$k release.json)" >> "$GITHUB_OUTPUT"; done
 
-  approve:
-    name: QA approve
-    needs: load
-    runs-on: ubuntu-26.04
-    steps:
-      - run: |
-          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
-          echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          say "Approved by ${{ github.actor }} (ran this workflow)"
 
   demo:
     name: Demo (${{ matrix.region }})
-    needs: [load, approve]
+    needs: load
     runs-on: ubuntu-26.04
     strategy:
       matrix:

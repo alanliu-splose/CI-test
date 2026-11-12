@@ -4,6 +4,10 @@ on:
   issue_comment:
     types: [created]
 
+defaults:
+  run:
+    shell: bash
+
 permissions:
   contents: read
   issues: write
@@ -12,87 +16,266 @@ concurrency:
   group: release-issue-${{ github.event.issue.number }}
   cancel-in-progress: false
 
+env:
+  GH_TOKEN: ${{ github.token }}
+  GH_REPO: ${{ github.repository }}
+  NUMBER: ${{ github.event.issue.number }}
+
 jobs:
-  route:
-    name: Read command
+  load:
+    name: Load release
     if: >-
       github.event.issue.state == 'open' &&
       contains(github.event.issue.labels.*.name, 'release') &&
       (startsWith(github.event.comment.body, '/qa-approve') || startsWith(github.event.comment.body, '/eng-approve'))
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       gate: ${{ steps.r.outputs.gate }}
+      fail_preflight: ${{ steps.r.outputs.fail_preflight }}
       commit: ${{ steps.r.outputs.commit }}
       base: ${{ steps.r.outputs.base }}
       services: ${{ steps.r.outputs.services }}
     steps:
       - id: r
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          NUMBER: ${{ github.event.issue.number }}
-          COMMENT_ID: ${{ github.event.comment.id }}
           ASSOCIATION: ${{ github.event.comment.author_association }}
-          QA_CMD: ${{ startsWith(github.event.comment.body, '/qa-approve') }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          COMMENT: ${{ github.event.comment.body }}
           ISSUE_BODY: ${{ github.event.issue.body }}
           LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
         run: |
-          reject() { gh issue comment "$NUMBER" --body "⛔ $1"; echo "::error::$1"; exit 1; }
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          reject() { gh issue comment "$NUMBER" --body "⛔ $1"; say "Rejected: $1"; echo "::error::$1"; exit 1; }
+          command=$(head -1 <<<"$COMMENT" | tr -d '\r')
           case "$ASSOCIATION" in OWNER|MEMBER|COLLABORATOR) ;; *) reject "Only repo members can approve.";; esac
-          if [ "$QA_CMD" = true ]; then gate=qa; else gate=eng; fi
+          case "$command" in /qa-approve*) gate=qa;; *) gate=eng;; esac
+          case "$command" in *fail-preflight*) fail=true;; *) fail=false;; esac
           case ",$LABELS," in *,qa-approved,*) qa=1;; *) qa=0;; esac
-          if [ $gate = qa ] && [ $qa = 1 ]; then reject "QA already approved. Next is \`/eng-approve\`."; fi
-          if [ $gate = eng ] && [ $qa = 0 ]; then reject "Prod needs \`/qa-approve\` and a demo first."; fi
+          [ $gate = qa ] && [ $qa = 1 ] && reject "QA already approved. Next is \`/eng-approve\`."
+          [ $gate = eng ] && [ $qa = 0 ] && reject "Prod needs \`/qa-approve\` and a demo first."
           gh api -X POST "repos/$GH_REPO/issues/comments/$COMMENT_ID/reactions" -f content=rocket >/dev/null
-          json=$(printf '%s' "$ISSUE_BODY" | sed -n 's/.*<!-- release:\(.*\) -->.*/\1/p' | head -1)
+          json=$(sed -n 's/.*<!-- release:\(.*\) -->.*/\1/p' <<<"$ISSUE_BODY" | head -1)
+          say "Release from issue #$NUMBER"
+          say "  commit    $(jq -r .commit <<<"$json")"
+          say "  base      $(jq -r .base <<<"$json")"
+          say "  services  $(jq -r '.services|gsub(",";", ")' <<<"$json")"
+          say "Approved by $GITHUB_ACTOR: $command"
           echo "gate=$gate" >> "$GITHUB_OUTPUT"
+          echo "fail_preflight=$fail" >> "$GITHUB_OUTPUT"
           for k in commit base services; do echo "$k=$(jq -r .$k <<<"$json")" >> "$GITHUB_OUTPUT"; done
 
+  # /qa-approve
+
   demo:
-    needs: route
-    if: needs.route.outputs.gate == 'qa'
-    uses: ./.github/workflows/demo.yml
-    with:
-      commit: ${{ needs.route.outputs.commit }}
-      services: ${{ needs.route.outputs.services }}
-
-  prod:
-    needs: route
-    if: needs.route.outputs.gate == 'eng'
-    uses: ./.github/workflows/prod.yml
-    with:
-      commit: ${{ needs.route.outputs.commit }}
-      base: ${{ needs.route.outputs.base }}
-      services: ${{ needs.route.outputs.services }}
-
-  report:
-    name: Report on issue
-    needs: [route, demo, prod]
-    if: always() && needs.route.result == 'success'
-    runs-on: ubuntu-latest
+    name: Demo (${{ matrix.region }})
+    needs: load
+    if: needs.load.outputs.gate == 'qa'
+    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        region: [AU, UK]
     steps:
       - env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          NUMBER: ${{ github.event.issue.number }}
-          GATE: ${{ needs.route.outputs.gate }}
-          DEMO: ${{ needs.demo.result }}
-          PROD: ${{ needs.prod.result }}
-          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SERVICES: ${{ needs.load.outputs.services }}
         run: |
-          if [ "$GATE" = qa ]; then
-            if [ "$DEMO" = success ]; then
-              gh issue edit "$NUMBER" --add-label qa-approved
-              gh issue comment "$NUMBER" --body "✅ Demo deployed ([run]($RUN)). Eng: comment \`/eng-approve\` to ship to prod."
-            else
-              gh issue comment "$NUMBER" --body "❌ Demo failed ([run]($RUN)). Fix and comment \`/qa-approve\` again."
-            fi
-          else
-            if [ "$PROD" = success ]; then
-              gh issue edit "$NUMBER" --add-label eng-approved
-              gh issue comment "$NUMBER" --body "🚀 Prod deployed ([run]($RUN))."
-              gh issue close "$NUMBER"
-            else
-              gh issue comment "$NUMBER" --body "❌ Prod run stopped ([run]($RUN)). If pre-flight failed (e.g. imports running), prod is untouched: ship the fix with Prod Hotfix, or comment \`/eng-approve\` again once it is clear."
-            fi
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          for s in ${SERVICES//,/ }; do say "Deploy $s to blue-bowtie ${{ matrix.region }} (simulated) -> done"; done
+
+  demo-health:
+    name: Demo health-check
+    needs: [load, demo]
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          COMMIT: ${{ needs.load.outputs.commit }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          for region in AU UK; do say "blue-bowtie $region health-check (simulated) -> commit $COMMIT ✓"; done
+
+  tick-qa:
+    name: Tick QA on issue
+    needs: demo-health
+    runs-on: ubuntu-26.04
+    steps:
+      - run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          gh issue view "$NUMBER" --json body --jq .body | sed 's/^- \[ \] QA approve/- [x] QA approve/' > body.md
+          gh issue edit "$NUMBER" --body-file body.md --add-label qa-approved >/dev/null
+          gh issue comment "$NUMBER" --body "✅ Demo deployed ([run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID)). Eng: comment \`/eng-approve\` to ship to prod." >/dev/null
+          say "Issue #$NUMBER: QA approve ticked, label qa-approved, comment posted"
+
+  notify-eng:
+    name: Notify Eng
+    needs: [load, tick-qa]
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          COMMIT: ${{ needs.load.outputs.commit }}
+          SERVICES: ${{ needs.load.outputs.services }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Slack #deployments (simulated)"
+          say "@engineers Demo is ready: ${COMMIT:0:7} (${SERVICES//,/, }), approved by $GITHUB_ACTOR."
+          say "Ship to prod by commenting /eng-approve on issue #$NUMBER."
+
+  # /eng-approve
+
+  eb-health:
+    name: "Check: EB health"
+    needs: load
+    if: needs.load.outputs.gate == 'eng'
+    runs-on: ubuntu-26.04
+    steps:
+      - run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          for region in AU UK; do say "describe-environment-health splose-production-server-22 $region (simulated) -> Ok"; done
+
+  imports:
+    name: "Check: running imports"
+    needs: [load, eb-health]
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          FAIL: ${{ needs.load.outputs.fail_preflight }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          if [ "$FAIL" = true ]; then n=3; else n=0; fi
+          say "GET admin portal /running-imports with the secret key (simulated) -> $n processing"
+          if [ "$n" -gt 0 ]; then
+            say "Run stops: prod untouched. Ship the fix with Prod Hotfix."
+            echo "::error title=Imports running::$n imports processing. Run stops: prod untouched. Ship the fix with Prod Hotfix."
+            exit 1
           fi
+          say "No import processing -> continue"
+
+  notify-started:
+    name: Notify prod started
+    needs: [load, imports]
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          COMMIT: ${{ needs.load.outputs.commit }}
+          SERVICES: ${{ needs.load.outputs.services }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Slack #deployments (simulated)"
+          say "@engineers @qa Prod deploy started: ${COMMIT:0:7} (${SERVICES//,/, }), approved by $GITHUB_ACTOR."
+
+  tofu-apply:
+    name: Tofu apply
+    needs: notify-started
+    runs-on: ubuntu-26.04
+    steps:
+      - run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          for ws in production-au-splose production-uk-splose production-au production-uk; do
+            say "tofu apply $ws (simulated) -> no changes"
+          done
+
+  db-migrator:
+    name: db-migrator (${{ matrix.region }})
+    needs: [load, tofu-apply]
+    if: contains(needs.load.outputs.services, 'server')
+    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        region: [AU, UK]
+    steps:
+      - run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "db-migrator Fargate task ${{ matrix.region }} (simulated) -> migrations up to date"
+
+  prod:
+    name: Prod (${{ matrix.region }})
+    needs: [load, tofu-apply, db-migrator]
+    if: ${{ !failure() && !cancelled() && needs.tofu-apply.result == 'success' }}
+    runs-on: ubuntu-26.04
+    strategy:
+      matrix:
+        region: [AU, UK]
+    steps:
+      - env:
+          SERVICES: ${{ needs.load.outputs.services }}
+          COMMIT: ${{ needs.load.outputs.commit }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          for s in ${SERVICES//,/ }; do say "Deploy $s ${COMMIT:0:7} to prod ${{ matrix.region }} (simulated) -> done"; done
+
+  verify:
+    name: Verify
+    needs: [load, prod]
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          COMMIT: ${{ needs.load.outputs.commit }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          for region in AU UK; do
+            say "Smoke tests $region-prod (simulated) -> passed"
+            say "Health-check $region (simulated) -> commit $COMMIT = head ✓"
+          done
+          say "Errors 15 min before / after (simulated) -> 12 / 11, no spike"
+
+  tick-eng:
+    name: Tick Eng on issue
+    needs: verify
+    runs-on: ubuntu-26.04
+    steps:
+      - run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          gh issue view "$NUMBER" --json body --jq .body | sed 's/^- \[ \] Eng approve/- [x] Eng approve/' > body.md
+          gh issue edit "$NUMBER" --body-file body.md --add-label eng-approved >/dev/null
+          gh issue comment "$NUMBER" --body "🚀 Prod deployed ([run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID))." >/dev/null
+          gh issue close "$NUMBER" >/dev/null
+          say "Issue #$NUMBER: Eng approve ticked, label eng-approved, comment posted, issue closed"
+
+  notify-succeeded:
+    name: Notify prod succeeded
+    needs: [load, tick-eng]
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          COMMIT: ${{ needs.load.outputs.commit }}
+          BASE: ${{ needs.load.outputs.base }}
+          SERVICES: ${{ needs.load.outputs.services }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Slack #deployments (simulated)"
+          say "@engineers @qa Prod deploy succeeded: ${BASE:0:7}..${COMMIT:0:7} (${SERVICES//,/, }). AU and UK verified."
+
+  report-failure:
+    name: Report failure on issue
+    needs: [load, demo, demo-health, tick-qa, eb-health, imports, notify-started, tofu-apply, db-migrator, prod, verify, tick-eng]
+    if: failure() && needs.load.result == 'success'
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          GATE: ${{ needs.load.outputs.gate }}
+          IMPORTS: ${{ needs.imports.result }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          run="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          if [ "$GATE" = qa ]; then
+            msg="❌ Demo failed ([run]($run)). Fix it and comment \`/qa-approve\` again."
+          elif [ "$IMPORTS" = failure ]; then
+            msg="❌ Pre-flight failed: imports running ([run]($run)). Prod untouched. Ship the fix with Prod Hotfix, or comment \`/eng-approve\` again once clear."
+          else
+            msg="❌ Prod run failed ([run]($run))."
+          fi
+          gh issue comment "$NUMBER" --body "$msg" >/dev/null
+          say "Issue #$NUMBER: $msg"

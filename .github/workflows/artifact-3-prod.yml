@@ -67,7 +67,8 @@ jobs:
       - name: Notify started
         env:
           COMMIT: ${{ steps.r.outputs.commit }}
-        run: echo "Slack #deployments (simulated): Prod deploy started ${COMMIT:0:7}"
+        run: |
+          echo "Slack #deployments (simulated): Prod deploy started ${COMMIT:0:7}"
 
       - name: Tofu apply
         run: |

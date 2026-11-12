@@ -7,6 +7,10 @@ on:
         description: 'Optional. Run id of "Artifact · 2". Blank = the latest successful one.'
         required: false
         default: ''
+      imports_running:
+        description: 'Simulate: imports still processing, so the pre-flight check fails'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -51,15 +55,15 @@ jobs:
         run: |
           for region in AU UK; do echo "describe-environment-health splose-production-server-22 $region (simulated) -> Ok"; done
 
-      # Simulated: no endpoint or secret yet. Set the repo variable RUNNING_IMPORTS above 0 to see a failure.
       - name: "Check: running imports"
         env:
-          RUNNING_IMPORTS: ${{ vars.RUNNING_IMPORTS || '0' }}
+          IMPORTS_RUNNING: ${{ inputs.imports_running }}
         run: |
-          echo "GET admin portal /running-imports with the secret key (simulated) -> $RUNNING_IMPORTS processing"
-          if [ "$RUNNING_IMPORTS" -gt 0 ]; then
-            echo "::error title=Imports running::$RUNNING_IMPORTS imports processing. Run stops: prod untouched. Ship the fix with Prod Hotfix."
-            echo "### ❌ Stopped at pre-flight: $RUNNING_IMPORTS imports processing. Prod untouched. Ship the fix with Prod Hotfix." >> "$GITHUB_STEP_SUMMARY"
+          if [ "$IMPORTS_RUNNING" = true ]; then n=3; else n=0; fi
+          echo "GET admin portal /running-imports with the secret key (simulated) -> $n processing"
+          if [ "$n" -gt 0 ]; then
+            echo "::error title=Imports running::$n imports processing. Run stops: prod untouched. Ship the fix with Prod Hotfix."
+            echo "### ❌ Stopped at pre-flight: $n imports processing. Prod untouched. Ship the fix with Prod Hotfix." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           echo "No import processing -> continue"

@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: 'Optional. Run id of "Artifact · 1". Blank = the latest successful one.'
+        description: 'Run ID'
         required: false
         default: ''
 

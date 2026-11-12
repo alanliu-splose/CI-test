@@ -4,11 +4,11 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: 'Optional. Run id of "Artifact · 2". Blank = the latest successful one.'
+        description: 'Run ID'
         required: false
         default: ''
       imports_running:
-        description: 'Simulate: imports still processing, so the pre-flight check fails'
+        description: 'Simulate pre-flight check fails'
         type: boolean
         default: false
 

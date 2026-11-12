@@ -2,11 +2,6 @@ name: "Artifact · 1 Prepare → Staging"
 
 on:
   workflow_dispatch:
-    inputs:
-      services:
-        description: 'Optional comma list (server,frontend,public-api). Blank = from the diff.'
-        required: false
-        default: ''
 
 permissions:
   contents: read
@@ -41,23 +36,17 @@ jobs:
       - name: Work out services
         id: services
         env:
-          INPUT_SERVICES: ${{ inputs.services }}
           BASE: ${{ steps.base.outputs.base }}
           COMMIT: ${{ steps.head.outputs.commit }}
         run: |
-          if [ -n "$INPUT_SERVICES" ]; then
-            echo "services input filled -> $INPUT_SERVICES"
-            services=$INPUT_SERVICES
-          else
-            echo "Changed files ${BASE:0:7}..${COMMIT:0:7} -> service (deployment note path map):"
-            map=$(git diff --name-only "$BASE" "$COMMIT" | awk -F/ '
-              $1=="packages" && $2=="server"     {print $0 " -> server"}
-              $1=="packages" && $2=="web-app"    {print $0 " -> frontend"}
-              $1=="packages" && $2=="public-api" {print $0 " -> public-api"}')
-            echo "$map" | sed 's/^/  /'
-            services=$(echo "$map" | awk '{print $NF}' | grep -v '^$' | sort -u | paste -sd, -)
-          fi
-          if [ -z "$services" ]; then echo "::error::No deployable change. Fill services to force one."; exit 1; fi
+          echo "Changed files ${BASE:0:7}..${COMMIT:0:7} -> service (deployment note path map):"
+          map=$(git diff --name-only "$BASE" "$COMMIT" | awk -F/ '
+          $1=="packages" && $2=="server"     {print $0 " -> server"}
+          $1=="packages" && $2=="web-app"    {print $0 " -> frontend"}
+          $1=="packages" && $2=="public-api" {print $0 " -> public-api"}')
+          echo "$map" | sed 's/^/  /'
+          services=$(echo "$map" | awk '{print $NF}' | grep -v '^$' | sort -u | paste -sd, -)
+          if [ -z "$services" ]; then echo "::error::No deployable change between base and head."; exit 1; fi
           echo "services = $services"
           echo "services=$services" >> "$GITHUB_OUTPUT"
 

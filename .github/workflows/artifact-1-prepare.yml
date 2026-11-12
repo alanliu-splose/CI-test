@@ -115,7 +115,6 @@ jobs:
             for s in ${SERVICES//,/ }; do say "Deploy $s to $env (simulated) -> done"; done
           done
           say "regression-run.yml dispatched (simulated)"
-          say "Slack (simulated): @QA staging is ready, regression run started"
 
   save:
     name: Save release.json
@@ -135,3 +134,18 @@ jobs:
         with:
           name: release
           path: release.json
+
+  notify-qa:
+    name: Notify QA
+    needs: [pick-commit, services, save]
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          COMMIT: ${{ needs.pick-commit.outputs.commit }}
+          SERVICES: ${{ needs.services.outputs.services }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Slack #deployments (simulated)"
+          say "@qa Staging is ready: ${COMMIT:0:7} (${SERVICES//,/, }). Regression run started."
+          say "Approve by running Artifact · 2 QA approve → Demo."

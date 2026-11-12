@@ -100,16 +100,18 @@ jobs:
           say "No import processing -> continue"
 
   notify-started:
-    name: Notify started
+    name: Notify prod started
     needs: [load, imports]
     runs-on: ubuntu-26.04
     steps:
       - env:
           COMMIT: ${{ needs.load.outputs.commit }}
+          SERVICES: ${{ needs.load.outputs.services }}
         run: |
           say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          say "Slack #deployments (simulated): Prod deploy started ${COMMIT:0:7}"
+          say "Slack #deployments (simulated)"
+          say "@engineers @qa Prod deploy started: ${COMMIT:0:7} (${SERVICES//,/, }), approved by $GITHUB_ACTOR."
 
   tofu-apply:
     name: Tofu apply
@@ -171,7 +173,7 @@ jobs:
           say "Errors 15 min before / after (simulated) -> 12 / 11, no spike"
 
   notify-succeeded:
-    name: Notify succeeded
+    name: Notify prod succeeded
     needs: [load, verify]
     runs-on: ubuntu-26.04
     steps:
@@ -182,7 +184,5 @@ jobs:
         run: |
           say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
           echo '```text' >> "$GITHUB_STEP_SUMMARY"
-          say "Slack #deployments (simulated): Prod deploy succeeded"
-          say "  commit    $COMMIT"
-          say "  base      $BASE"
-          say "  services  ${SERVICES//,/, }"
+          say "Slack #deployments (simulated)"
+          say "@engineers @qa Prod deploy succeeded: ${BASE:0:7}..${COMMIT:0:7} (${SERVICES//,/, }). AU and UK verified."

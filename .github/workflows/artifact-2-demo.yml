@@ -108,3 +108,18 @@ jobs:
         with:
           name: release
           path: release.json
+
+  notify-eng:
+    name: Notify Eng
+    needs: [load, save]
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          COMMIT: ${{ needs.load.outputs.commit }}
+          SERVICES: ${{ needs.load.outputs.services }}
+        run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Slack #deployments (simulated)"
+          say "@engineers Demo is ready: ${COMMIT:0:7} (${SERVICES//,/, }), approved by $GITHUB_ACTOR."
+          say "Ship to prod by running Artifact · 3 Eng approve → Prod."

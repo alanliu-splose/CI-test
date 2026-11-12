@@ -8,6 +8,10 @@ on:
         required: false
         default: ''
 
+defaults:
+  run:
+    shell: bash
+
 permissions:
   contents: read
   actions: read
@@ -30,19 +34,21 @@ jobs:
         env:
           RUN_ID: ${{ inputs.run_id }}
         run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
           if [ -z "$RUN_ID" ]; then
             RUN_ID=$(gh run list -w artifact-1-prepare.yml -s success -L 1 --json databaseId --jq '.[0].databaseId')
             [ -n "$RUN_ID" ] || { echo "::error::No successful Artifact · 1 run yet"; exit 1; }
-            echo "Run ID blank -> latest successful Artifact · 1 run: $RUN_ID"
+            say "Run ID blank -> latest successful Artifact · 1 run: $RUN_ID"
           fi
           gh run download "$RUN_ID" -n release
           stage=$(jq -r .stage release.json)
           [ "$stage" = staging ] || { echo "::error::run $RUN_ID is at stage '$stage', expected staging"; exit 1; }
-          echo "Release from run $RUN_ID"
-          echo "  stage     $stage"
-          echo "  commit    $(jq -r .commit release.json)"
-          echo "  base      $(jq -r .base release.json)"
-          echo "  services  $(jq -r '.services|gsub(",";", ")' release.json)"
+          say "Release from run $RUN_ID"
+          say "  stage     $stage"
+          say "  commit    $(jq -r .commit release.json)"
+          say "  base      $(jq -r .base release.json)"
+          say "  services  $(jq -r '.services|gsub(",";", ")' release.json)"
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           for k in commit base services; do echo "$k=$(jq -r .$k release.json)" >> "$GITHUB_OUTPUT"; done
 
@@ -51,7 +57,10 @@ jobs:
     needs: load
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Approved by ${{ github.actor }} (ran this workflow)"
+      - run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Approved by ${{ github.actor }} (ran this workflow)"
 
   demo:
     name: Demo (${{ matrix.region }})
@@ -64,7 +73,9 @@ jobs:
       - env:
           SERVICES: ${{ needs.load.outputs.services }}
         run: |
-          for s in ${SERVICES//,/ }; do echo "Deploy $s to blue-bowtie ${{ matrix.region }} (simulated) -> done"; done
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          for s in ${SERVICES//,/ }; do say "Deploy $s to blue-bowtie ${{ matrix.region }} (simulated) -> done"; done
 
   demo-health:
     name: Demo health-check
@@ -74,7 +85,9 @@ jobs:
       - env:
           COMMIT: ${{ needs.load.outputs.commit }}
         run: |
-          for region in AU UK; do echo "blue-bowtie $region health-check (simulated) -> commit $COMMIT ✓"; done
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          for region in AU UK; do say "blue-bowtie $region health-check (simulated) -> commit $COMMIT ✓"; done
 
   save:
     name: Save release.json
@@ -89,24 +102,8 @@ jobs:
         run: |
           jq -n --arg commit "$COMMIT" --arg base "$BASE" --arg services "$SERVICES" --arg prep "$PREPARE_RUN" --arg run "$GITHUB_RUN_ID" \
             '{stage:"demo", commit:$commit, base:$base, services:$services, prepare_run:$prep, demo_run:$run}' > release.json
-          echo "Release saved"
-          echo "  stage        demo"
-          echo "  commit       $COMMIT"
-          echo "  base         $BASE"
-          echo "  services     ${SERVICES//,/, }"
-          echo "  prepare run  $PREPARE_RUN"
-          echo "  demo run     $GITHUB_RUN_ID"
-          echo
-          echo "Next: Eng runs \"Artifact · 3 Eng approve → Prod\" (Run ID blank = this run)"
-          {
-            echo "### Release saved · stage demo"
-            echo "- commit: \`$COMMIT\`"
-            echo "- base: \`$BASE\`"
-            echo "- services: ${SERVICES//,/, }"
-            echo "- prepare run: $PREPARE_RUN · demo run: $GITHUB_RUN_ID"
-            echo
-            echo "**Next:** Eng runs *Artifact · 3 Eng approve → Prod* (Run ID blank = this run)"
-          } >> "$GITHUB_STEP_SUMMARY"
+          jq . release.json
+          printf '```json\n%s\n```\n' "$(jq . release.json)" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: release

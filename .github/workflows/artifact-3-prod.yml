@@ -12,6 +12,10 @@ on:
         type: boolean
         default: false
 
+defaults:
+  run:
+    shell: bash
+
 permissions:
   contents: read
   actions: read
@@ -38,19 +42,21 @@ jobs:
         env:
           RUN_ID: ${{ inputs.run_id }}
         run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
           if [ -z "$RUN_ID" ]; then
             RUN_ID=$(gh run list -w artifact-2-demo.yml -s success -L 1 --json databaseId --jq '.[0].databaseId')
             [ -n "$RUN_ID" ] || { echo "::error::No successful Artifact · 2 run yet"; exit 1; }
-            echo "Run ID blank -> latest successful Artifact · 2 run: $RUN_ID"
+            say "Run ID blank -> latest successful Artifact · 2 run: $RUN_ID"
           fi
           gh run download "$RUN_ID" -n release
           stage=$(jq -r .stage release.json)
           [ "$stage" = demo ] || { echo "::error::run $RUN_ID is at stage '$stage', expected demo: prod needs a Demo run, so QA approve can't be skipped"; exit 1; }
-          echo "Release from run $RUN_ID"
-          echo "  stage     $stage"
-          echo "  commit    $(jq -r .commit release.json)"
-          echo "  base      $(jq -r .base release.json)"
-          echo "  services  $(jq -r '.services|gsub(",";", ")' release.json)"
+          say "Release from run $RUN_ID"
+          say "  stage     $stage"
+          say "  commit    $(jq -r .commit release.json)"
+          say "  base      $(jq -r .base release.json)"
+          say "  services  $(jq -r '.services|gsub(",";", ")' release.json)"
           echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
           for k in commit base services; do echo "$k=$(jq -r .$k release.json)" >> "$GITHUB_OUTPUT"; done
 
@@ -59,7 +65,10 @@ jobs:
     needs: load
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Approved by ${{ github.actor }} (ran this workflow)"
+      - run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Approved by ${{ github.actor }} (ran this workflow)"
 
   eb-health:
     name: "Check: EB health"
@@ -67,7 +76,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
-          for region in AU UK; do echo "describe-environment-health splose-production-server-22 $region (simulated) -> Ok"; done
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          for region in AU UK; do say "describe-environment-health splose-production-server-22 $region (simulated) -> Ok"; done
 
   imports:
     name: "Check: running imports"
@@ -77,14 +88,16 @@ jobs:
       - env:
           IMPORTS_RUNNING: ${{ inputs.imports_running }}
         run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
           if [ "$IMPORTS_RUNNING" = true ]; then n=3; else n=0; fi
-          echo "GET admin portal /running-imports with the secret key (simulated) -> $n processing"
+          say "GET admin portal /running-imports with the secret key (simulated) -> $n processing"
           if [ "$n" -gt 0 ]; then
+            say "Run stops: prod untouched. Ship the fix with Prod Hotfix."
             echo "::error title=Imports running::$n imports processing. Run stops: prod untouched. Ship the fix with Prod Hotfix."
-            echo "### ❌ Stopped at pre-flight: $n imports processing. Prod untouched. Ship the fix with Prod Hotfix." >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
-          echo "No import processing -> continue"
+          say "No import processing -> continue"
 
   notify-started:
     name: Notify started
@@ -94,7 +107,9 @@ jobs:
       - env:
           COMMIT: ${{ needs.load.outputs.commit }}
         run: |
-          echo "Slack #deployments (simulated): Prod deploy started ${COMMIT:0:7}"
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Slack #deployments (simulated): Prod deploy started ${COMMIT:0:7}"
 
   tofu-apply:
     name: Tofu apply
@@ -102,8 +117,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
           for ws in production-au-splose production-uk-splose production-au production-uk; do
-            echo "tofu apply $ws (simulated) -> no changes"
+            say "tofu apply $ws (simulated) -> no changes"
           done
 
   db-migrator:
@@ -115,7 +132,10 @@ jobs:
       matrix:
         region: [AU, UK]
     steps:
-      - run: echo "db-migrator Fargate task ${{ matrix.region }} (simulated) -> migrations up to date"
+      - run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "db-migrator Fargate task ${{ matrix.region }} (simulated) -> migrations up to date"
 
   prod:
     name: Prod (${{ matrix.region }})
@@ -130,7 +150,9 @@ jobs:
           SERVICES: ${{ needs.load.outputs.services }}
           COMMIT: ${{ needs.load.outputs.commit }}
         run: |
-          for s in ${SERVICES//,/ }; do echo "Deploy $s ${COMMIT:0:7} to prod ${{ matrix.region }} (simulated) -> done"; done
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          for s in ${SERVICES//,/ }; do say "Deploy $s ${COMMIT:0:7} to prod ${{ matrix.region }} (simulated) -> done"; done
 
   verify:
     name: Verify
@@ -140,11 +162,13 @@ jobs:
       - env:
           COMMIT: ${{ needs.load.outputs.commit }}
         run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
           for region in AU UK; do
-            echo "Smoke tests $region-prod (simulated) -> passed"
-            echo "Health-check $region (simulated) -> commit $COMMIT = head ✓"
+            say "Smoke tests $region-prod (simulated) -> passed"
+            say "Health-check $region (simulated) -> commit $COMMIT = head ✓"
           done
-          echo "Errors 15 min before / after (simulated) -> 12 / 11, no spike"
+          say "Errors 15 min before / after (simulated) -> 12 / 11, no spike"
 
   notify-succeeded:
     name: Notify succeeded
@@ -156,13 +180,9 @@ jobs:
           BASE: ${{ needs.load.outputs.base }}
           SERVICES: ${{ needs.load.outputs.services }}
         run: |
-          echo "Slack #deployments (simulated): Prod deploy succeeded"
-          echo "  commit    $COMMIT"
-          echo "  base      $BASE"
-          echo "  services  ${SERVICES//,/, }"
-          {
-            echo "### ✅ Prod deployed"
-            echo "- commit: \`$COMMIT\`"
-            echo "- base: \`$BASE\`"
-            echo "- services: ${SERVICES//,/, }"
-          } >> "$GITHUB_STEP_SUMMARY"
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Slack #deployments (simulated): Prod deploy succeeded"
+          say "  commit    $COMMIT"
+          say "  base      $BASE"
+          say "  services  ${SERVICES//,/, }"

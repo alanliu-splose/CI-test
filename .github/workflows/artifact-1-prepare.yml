@@ -3,6 +3,10 @@ name: "Artifact · 1 Prepare → Staging"
 on:
   workflow_dispatch:
 
+defaults:
+  run:
+    shell: bash
+
 permissions:
   contents: read
 
@@ -19,7 +23,9 @@ jobs:
     steps:
       - id: r
         run: |
-          echo "Newest main commit with green CI (simulated) -> $GITHUB_SHA"
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Newest main commit with green CI (simulated) -> $GITHUB_SHA"
           echo "commit=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
 
   find-base:
@@ -34,10 +40,12 @@ jobs:
           PROD_COMMIT: ${{ vars.PROD_COMMIT }}
           COMMIT: ${{ needs.pick-commit.outputs.commit }}
         run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
           base=${PROD_COMMIT:-$(gh api "repos/$GH_REPO/commits/$COMMIT" --jq '.parents[0].sha')}
-          echo "GET https://acme.splose.com/api/health-check     (simulated) -> commit $base"
-          echo "GET https://acme.uk.splose.com/api/health-check  (simulated) -> commit $base"
-          echo "AU and UK match -> base = $base"
+          say "GET https://acme.splose.com/api/health-check     (simulated) -> commit $base"
+          say "GET https://acme.uk.splose.com/api/health-check  (simulated) -> commit $base"
+          say "AU and UK match -> base = $base"
           echo "base=$base" >> "$GITHUB_OUTPUT"
 
   services:
@@ -52,15 +60,17 @@ jobs:
           COMMIT: ${{ needs.pick-commit.outputs.commit }}
           BASE: ${{ needs.find-base.outputs.base }}
         run: |
-          echo "Changed files ${BASE:0:7}..${COMMIT:0:7} -> service (deployment note path map):"
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Changed files ${BASE:0:7}..${COMMIT:0:7} -> service (deployment note path map):"
           map=$(gh api "repos/$GH_REPO/compare/$BASE...$COMMIT" --jq '.files[].filename' | awk -F/ '
             $1=="packages" && $2=="server"     {print $0 " -> server"}
             $1=="packages" && $2=="web-app"    {print $0 " -> frontend"}
             $1=="packages" && $2=="public-api" {print $0 " -> public-api"}')
-          echo "$map" | sed 's/^/  /'
+          say "$(echo "$map" | sed 's/^/  /')"
           services=$(echo "$map" | awk '{print $NF}' | grep -v '^$' | sort -u | paste -sd, -)
           if [ -z "$services" ]; then echo "::error::No deployable change between base and head."; exit 1; fi
-          echo "services = ${services//,/, }"
+          say "services = ${services//,/, }"
           echo "services=$services" >> "$GITHUB_OUTPUT"
 
   tofu-plan:
@@ -69,8 +79,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
           for ws in production-au-splose production-uk-splose production-au production-uk; do
-            echo "tofu plan $ws (simulated) -> no changes"
+            say "tofu plan $ws (simulated) -> no changes"
           done
 
   note:
@@ -83,9 +95,11 @@ jobs:
           BASE: ${{ needs.find-base.outputs.base }}
           SERVICES: ${{ needs.services.outputs.services }}
         run: |
-          echo "Slack #deployments (simulated):"
-          echo "  Deployment ${BASE:0:7}..${COMMIT:0:7}"
-          echo "  Services: ${SERVICES//,/, }"
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
+          say "Slack #deployments (simulated):"
+          say "  Deployment ${BASE:0:7}..${COMMIT:0:7}"
+          say "  Services: ${SERVICES//,/, }"
 
   staging:
     name: Staging + red-devil
@@ -95,11 +109,13 @@ jobs:
       - env:
           SERVICES: ${{ needs.services.outputs.services }}
         run: |
+          say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
+          echo '```text' >> "$GITHUB_STEP_SUMMARY"
           for env in staging red-devil; do
-            for s in ${SERVICES//,/ }; do echo "Deploy $s to $env (simulated) -> done"; done
+            for s in ${SERVICES//,/ }; do say "Deploy $s to $env (simulated) -> done"; done
           done
-          echo "regression-run.yml dispatched (simulated)"
-          echo "Slack (simulated): @QA staging is ready, regression run started"
+          say "regression-run.yml dispatched (simulated)"
+          say "Slack (simulated): @QA staging is ready, regression run started"
 
   save:
     name: Save release.json
@@ -113,23 +129,8 @@ jobs:
         run: |
           jq -n --arg commit "$COMMIT" --arg base "$BASE" --arg services "$SERVICES" --arg run "$GITHUB_RUN_ID" \
             '{stage:"staging", commit:$commit, base:$base, services:$services, prepare_run:$run}' > release.json
-          echo "Release saved"
-          echo "  stage        staging"
-          echo "  commit       $COMMIT"
-          echo "  base         $BASE"
-          echo "  services     ${SERVICES//,/, }"
-          echo "  prepare run  $GITHUB_RUN_ID"
-          echo
-          echo "Next: QA runs \"Artifact · 2 QA approve → Demo\" (Run ID blank = this run)"
-          {
-            echo "### Release saved · stage staging"
-            echo "- commit: \`$COMMIT\`"
-            echo "- base: \`$BASE\`"
-            echo "- services: ${SERVICES//,/, }"
-            echo "- prepare run: $GITHUB_RUN_ID"
-            echo
-            echo "**Next:** QA runs *Artifact · 2 QA approve → Demo* (Run ID blank = this run)"
-          } >> "$GITHUB_STEP_SUMMARY"
+          jq . release.json
+          printf '```json\n%s\n```\n' "$(jq . release.json)" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: release

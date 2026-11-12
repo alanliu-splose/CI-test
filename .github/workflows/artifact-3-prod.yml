@@ -31,7 +31,7 @@ env:
 jobs:
   load:
     name: Load release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       run_id: ${{ steps.r.outputs.run_id }}
       commit: ${{ steps.r.outputs.commit }}
@@ -63,7 +63,7 @@ jobs:
   approve:
     name: Eng approve
     needs: load
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - run: |
           say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
@@ -73,7 +73,7 @@ jobs:
   eb-health:
     name: "Check: EB health"
     needs: approve
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - run: |
           say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
@@ -83,7 +83,7 @@ jobs:
   imports:
     name: "Check: running imports"
     needs: eb-health
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - env:
           IMPORTS_RUNNING: ${{ inputs.imports_running }}
@@ -102,7 +102,7 @@ jobs:
   notify-started:
     name: Notify started
     needs: [load, imports]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - env:
           COMMIT: ${{ needs.load.outputs.commit }}
@@ -114,7 +114,7 @@ jobs:
   tofu-apply:
     name: Tofu apply
     needs: notify-started
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - run: |
           say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
@@ -127,7 +127,7 @@ jobs:
     name: db-migrator (${{ matrix.region }})
     needs: [load, tofu-apply]
     if: contains(needs.load.outputs.services, 'server')
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         region: [AU, UK]
@@ -141,7 +141,7 @@ jobs:
     name: Prod (${{ matrix.region }})
     needs: [load, tofu-apply, db-migrator]
     if: ${{ !failure() && !cancelled() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         region: [AU, UK]
@@ -157,7 +157,7 @@ jobs:
   verify:
     name: Verify
     needs: [load, prod]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - env:
           COMMIT: ${{ needs.load.outputs.commit }}
@@ -173,7 +173,7 @@ jobs:
   notify-succeeded:
     name: Notify succeeded
     needs: [load, verify]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - env:
           COMMIT: ${{ needs.load.outputs.commit }}

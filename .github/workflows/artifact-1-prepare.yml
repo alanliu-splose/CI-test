@@ -17,7 +17,7 @@ env:
 jobs:
   pick-commit:
     name: Pick the commit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       commit: ${{ steps.r.outputs.commit }}
     steps:
@@ -31,7 +31,7 @@ jobs:
   find-base:
     name: Find what prod runs
     needs: pick-commit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       base: ${{ steps.r.outputs.base }}
     steps:
@@ -51,7 +51,7 @@ jobs:
   services:
     name: Work out services
     needs: [pick-commit, find-base]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       services: ${{ steps.r.outputs.services }}
     steps:
@@ -76,7 +76,7 @@ jobs:
   tofu-plan:
     name: Tofu plan
     needs: services
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - run: |
           say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
@@ -88,7 +88,7 @@ jobs:
   note:
     name: Deployment note
     needs: [pick-commit, find-base, services, tofu-plan]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - env:
           COMMIT: ${{ needs.pick-commit.outputs.commit }}
@@ -104,7 +104,7 @@ jobs:
   staging:
     name: Staging + red-devil
     needs: [services, note]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - env:
           SERVICES: ${{ needs.services.outputs.services }}
@@ -120,7 +120,7 @@ jobs:
   save:
     name: Save release.json
     needs: [pick-commit, find-base, services, staging]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - env:
           COMMIT: ${{ needs.pick-commit.outputs.commit }}
@@ -131,7 +131,7 @@ jobs:
             '{stage:"staging", commit:$commit, base:$base, services:$services, prepare_run:$run}' > release.json
           jq . release.json
           printf '```json\n%s\n```\n' "$(jq . release.json)" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release
           path: release.json

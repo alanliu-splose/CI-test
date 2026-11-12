@@ -23,7 +23,7 @@ env:
 jobs:
   load:
     name: Load release
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       run_id: ${{ steps.r.outputs.run_id }}
       commit: ${{ steps.r.outputs.commit }}
@@ -55,7 +55,7 @@ jobs:
   approve:
     name: QA approve
     needs: load
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - run: |
           say() { echo "$*"; echo "$*" >> "$GITHUB_STEP_SUMMARY"; }
@@ -65,7 +65,7 @@ jobs:
   demo:
     name: Demo (${{ matrix.region }})
     needs: [load, approve]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       matrix:
         region: [AU, UK]
@@ -80,7 +80,7 @@ jobs:
   demo-health:
     name: Demo health-check
     needs: [load, demo]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - env:
           COMMIT: ${{ needs.load.outputs.commit }}
@@ -92,7 +92,7 @@ jobs:
   save:
     name: Save release.json
     needs: [load, demo-health]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - env:
           COMMIT: ${{ needs.load.outputs.commit }}
@@ -104,7 +104,7 @@ jobs:
             '{stage:"demo", commit:$commit, base:$base, services:$services, prepare_run:$prep, demo_run:$run}' > release.json
           jq . release.json
           printf '```json\n%s\n```\n' "$(jq . release.json)" >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release
           path: release.json

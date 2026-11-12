@@ -4,64 +4,88 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: 'Run id of "Artifact · 1 Prepare → Staging"'
-        required: true
+        description: 'Optional. Run id of "Artifact · 1". Blank = the latest successful one.'
+        required: false
+        default: ''
 
 permissions:
   contents: read
   actions: read
 
 jobs:
-  load:
-    name: Load release.json
+  demo:
+    name: QA approve → Demo
     runs-on: ubuntu-latest
-    outputs:
-      commit: ${{ steps.r.outputs.commit }}
-      base: ${{ steps.r.outputs.base }}
-      services: ${{ steps.r.outputs.services }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: release
-          run-id: ${{ inputs.run_id }}
-          github-token: ${{ github.token }}
-      - id: r
+      - name: Load release
+        id: r
+        env:
+          RUN_ID: ${{ inputs.run_id }}
         run: |
-          cat release.json
-          stage=$(jq -r .stage release.json)
-          if [ "$stage" != "staging" ]; then
-            echo "::error::run ${{ inputs.run_id }} is at stage '$stage', expected a Prepare run"; exit 1
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID=$(gh run list -w artifact-1-prepare.yml -s success -L 1 --json databaseId --jq '.[0].databaseId')
+            [ -n "$RUN_ID" ] || { echo "::error::No successful Artifact · 1 run yet"; exit 1; }
+            echo "run_id blank -> latest successful Prepare run: $RUN_ID"
           fi
+          gh run download "$RUN_ID" -n release
+          stage=$(jq -r .stage release.json)
+          [ "$stage" = staging ] || { echo "::error::run $RUN_ID is at stage '$stage', expected a Prepare run"; exit 1; }
+          echo "Release from run $RUN_ID"
+          echo "  stage     $stage"
+          echo "  commit    $(jq -r .commit release.json)"
+          echo "  base      $(jq -r .base release.json)"
+          echo "  services  $(jq -r '.services|gsub(",";", ")' release.json)"
+          echo "prepare_run=$RUN_ID" >> "$GITHUB_OUTPUT"
           for k in commit base services; do echo "$k=$(jq -r .$k release.json)" >> "$GITHUB_OUTPUT"; done
 
-  demo:
-    needs: load
-    uses: ./.github/workflows/demo.yml
-    with:
-      commit: ${{ needs.load.outputs.commit }}
-      services: ${{ needs.load.outputs.services }}
+      - name: QA approve
+        run: echo "Approved by ${{ github.actor }} (ran this workflow)"
 
-  release-json:
-    name: Save release.json
-    needs: [load, demo]
-    runs-on: ubuntu-latest
-    steps:
-      - env:
-          COMMIT: ${{ needs.load.outputs.commit }}
-          BASE: ${{ needs.load.outputs.base }}
-          SERVICES: ${{ needs.load.outputs.services }}
-          PREPARE_RUN: ${{ inputs.run_id }}
+      - name: Demo (blue-bowtie)
+        env:
+          SERVICES: ${{ steps.r.outputs.services }}
+        run: |
+          for region in AU UK; do
+            for s in ${SERVICES//,/ }; do echo "Deploy $s to blue-bowtie $region (simulated) -> done"; done
+          done
+
+      - name: Demo health-check
+        env:
+          COMMIT: ${{ steps.r.outputs.commit }}
+        run: |
+          for region in AU UK; do echo "blue-bowtie $region health-check (simulated) -> commit $COMMIT ✓"; done
+
+      - name: Save release.json
+        env:
+          COMMIT: ${{ steps.r.outputs.commit }}
+          BASE: ${{ steps.r.outputs.base }}
+          SERVICES: ${{ steps.r.outputs.services }}
+          PREPARE_RUN: ${{ steps.r.outputs.prepare_run }}
         run: |
           jq -n --arg commit "$COMMIT" --arg base "$BASE" --arg services "$SERVICES" --arg prep "$PREPARE_RUN" --arg run "$GITHUB_RUN_ID" \
             '{stage:"demo", commit:$commit, base:$base, services:$services, prepare_run:$prep, demo_run:$run}' > release.json
-          cat release.json
+          echo "Release saved"
+          echo "  stage        demo"
+          echo "  commit       $COMMIT"
+          echo "  base         $BASE"
+          echo "  services     ${SERVICES//,/, }"
+          echo "  prepare run  $PREPARE_RUN"
+          echo "  demo run     $GITHUB_RUN_ID"
+          echo
+          echo "Next: Eng runs \"Artifact · 3 Eng approve → Prod\" (run_id blank = this run)"
           {
-            echo "### Next: Eng approves"
-            echo "Run **Artifact · 3 Eng approve → Prod** with \`run_id = $GITHUB_RUN_ID\`"
-            echo '```'
-            echo "gh workflow run artifact-3-prod.yml -R $GITHUB_REPOSITORY -f run_id=$GITHUB_RUN_ID"
-            echo '```'
+            echo "### Release saved · stage demo"
+            echo "- commit: \`$COMMIT\`"
+            echo "- base: \`$BASE\`"
+            echo "- services: ${SERVICES//,/, }"
+            echo "- prepare run: $PREPARE_RUN · demo run: $GITHUB_RUN_ID"
+            echo
+            echo "**Next:** Eng runs *Artifact · 3 Eng approve → Prod* (run_id blank = this run)"
           } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         with:
           name: release

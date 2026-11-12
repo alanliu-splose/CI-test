@@ -4,8 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       run_id:
-        description: 'Run id of "Artifact · 2 QA approve → Demo"'
-        required: true
+        description: 'Optional. Run id of "Artifact · 2". Blank = the latest successful one.'
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -16,32 +17,101 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  load:
-    name: Load release.json
+  prod:
+    name: Eng approve → Prod
     runs-on: ubuntu-latest
-    outputs:
-      commit: ${{ steps.r.outputs.commit }}
-      base: ${{ steps.r.outputs.base }}
-      services: ${{ steps.r.outputs.services }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
     steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: release
-          run-id: ${{ inputs.run_id }}
-          github-token: ${{ github.token }}
-      - id: r
+      - name: Load release
+        id: r
+        env:
+          RUN_ID: ${{ inputs.run_id }}
         run: |
-          cat release.json
-          stage=$(jq -r .stage release.json)
-          if [ "$stage" != "demo" ]; then
-            echo "::error::run ${{ inputs.run_id }} is at stage '$stage': prod needs a Demo run, so QA approve can't be skipped"; exit 1
+          if [ -z "$RUN_ID" ]; then
+            RUN_ID=$(gh run list -w artifact-2-demo.yml -s success -L 1 --json databaseId --jq '.[0].databaseId')
+            [ -n "$RUN_ID" ] || { echo "::error::No successful Artifact · 2 run yet"; exit 1; }
+            echo "run_id blank -> latest successful Demo run: $RUN_ID"
           fi
+          gh run download "$RUN_ID" -n release
+          stage=$(jq -r .stage release.json)
+          [ "$stage" = demo ] || { echo "::error::run $RUN_ID is at stage '$stage': prod needs a Demo run, so QA approve can't be skipped"; exit 1; }
+          echo "Release from run $RUN_ID"
+          echo "  stage     $stage"
+          echo "  commit    $(jq -r .commit release.json)"
+          echo "  base      $(jq -r .base release.json)"
+          echo "  services  $(jq -r '.services|gsub(",";", ")' release.json)"
           for k in commit base services; do echo "$k=$(jq -r .$k release.json)" >> "$GITHUB_OUTPUT"; done
 
-  prod:
-    needs: load
-    uses: ./.github/workflows/prod.yml
-    with:
-      commit: ${{ needs.load.outputs.commit }}
-      base: ${{ needs.load.outputs.base }}
-      services: ${{ needs.load.outputs.services }}
+      - name: Eng approve
+        run: echo "Approved by ${{ github.actor }} (ran this workflow)"
+
+      - name: "Check: EB health"
+        run: |
+          for region in AU UK; do echo "describe-environment-health splose-production-server-22 $region (simulated) -> Ok"; done
+
+      # Simulated: no endpoint or secret yet. Set the repo variable RUNNING_IMPORTS above 0 to see a failure.
+      - name: "Check: running imports"
+        env:
+          RUNNING_IMPORTS: ${{ vars.RUNNING_IMPORTS || '0' }}
+        run: |
+          echo "GET admin portal /running-imports with the secret key (simulated) -> $RUNNING_IMPORTS processing"
+          if [ "$RUNNING_IMPORTS" -gt 0 ]; then
+            echo "::error title=Imports running::$RUNNING_IMPORTS imports processing. Run stops: prod untouched. Ship the fix with Prod Hotfix."
+            echo "### ❌ Stopped at pre-flight: $RUNNING_IMPORTS imports processing. Prod untouched. Ship the fix with Prod Hotfix." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          echo "No import processing -> continue"
+
+      - name: Notify started
+        env:
+          COMMIT: ${{ steps.r.outputs.commit }}
+        run: echo "Slack #deployments (simulated): Prod deploy started ${COMMIT:0:7}"
+
+      - name: Tofu apply
+        run: |
+          for ws in production-au-splose production-uk-splose production-au production-uk; do
+            echo "tofu apply $ws (simulated) -> no changes"
+          done
+
+      - name: db-migrator
+        if: contains(steps.r.outputs.services, 'server')
+        run: |
+          for region in AU UK; do echo "db-migrator Fargate task $region (simulated) -> migrations up to date"; done
+
+      - name: Prod
+        env:
+          SERVICES: ${{ steps.r.outputs.services }}
+          COMMIT: ${{ steps.r.outputs.commit }}
+        run: |
+          for region in AU UK; do
+            for s in ${SERVICES//,/ }; do echo "Deploy $s ${COMMIT:0:7} to prod $region (simulated) -> done"; done
+          done
+
+      - name: Verify
+        env:
+          COMMIT: ${{ steps.r.outputs.commit }}
+        run: |
+          for region in AU UK; do
+            echo "Smoke tests $region-prod (simulated) -> passed"
+            echo "Health-check $region (simulated) -> commit $COMMIT = head ✓"
+          done
+          echo "Errors 15 min before / after (simulated) -> 12 / 11, no spike"
+
+      - name: Notify succeeded
+        env:
+          COMMIT: ${{ steps.r.outputs.commit }}
+          BASE: ${{ steps.r.outputs.base }}
+          SERVICES: ${{ steps.r.outputs.services }}
+        run: |
+          echo "Slack #deployments (simulated): Prod deploy succeeded"
+          echo "  commit    $COMMIT"
+          echo "  base      $BASE"
+          echo "  services  ${SERVICES//,/, }"
+          {
+            echo "### ✅ Prod deployed"
+            echo "- commit: \`$COMMIT\`"
+            echo "- base: \`$BASE\`"
+            echo "- services: ${SERVICES//,/, }"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -13,30 +13,106 @@ permissions:
 
 jobs:
   prepare:
-    uses: ./.github/workflows/prepare.yml
-    with:
-      services: ${{ inputs.services }}
-
-  release-json:
-    name: Save release.json
-    needs: prepare
+    name: Prepare → Staging
     runs-on: ubuntu-latest
     steps:
-      - env:
-          COMMIT: ${{ needs.prepare.outputs.commit }}
-          BASE: ${{ needs.prepare.outputs.base }}
-          SERVICES: ${{ needs.prepare.outputs.services }}
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pick the commit
+        id: head
+        run: |
+          echo "Newest main commit with green CI (simulated)"
+          echo "head = $(git rev-parse HEAD)  $(git log -1 --format=%s)"
+          echo "commit=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Find what prod runs
+        id: base
+        env:
+          PROD_COMMIT: ${{ vars.PROD_COMMIT }}
+        run: |
+          base=${PROD_COMMIT:-$(git rev-parse HEAD~1)}
+          echo "GET https://acme.splose.com/api/health-check     (simulated) -> commit $base"
+          echo "GET https://acme.uk.splose.com/api/health-check  (simulated) -> commit $base"
+          echo "AU and UK match -> base = $base"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
+      - name: Work out services
+        id: services
+        env:
+          INPUT_SERVICES: ${{ inputs.services }}
+          BASE: ${{ steps.base.outputs.base }}
+          COMMIT: ${{ steps.head.outputs.commit }}
+        run: |
+          if [ -n "$INPUT_SERVICES" ]; then
+            echo "services input filled -> $INPUT_SERVICES"
+            services=$INPUT_SERVICES
+          else
+            echo "Changed files ${BASE:0:7}..${COMMIT:0:7} -> service (deployment note path map):"
+            map=$(git diff --name-only "$BASE" "$COMMIT" | awk -F/ '
+              $1=="packages" && $2=="server"     {print $0 " -> server"}
+              $1=="packages" && $2=="web-app"    {print $0 " -> frontend"}
+              $1=="packages" && $2=="public-api" {print $0 " -> public-api"}')
+            echo "$map" | sed 's/^/  /'
+            services=$(echo "$map" | awk '{print $NF}' | grep -v '^$' | sort -u | paste -sd, -)
+          fi
+          if [ -z "$services" ]; then echo "::error::No deployable change. Fill services to force one."; exit 1; fi
+          echo "services = $services"
+          echo "services=$services" >> "$GITHUB_OUTPUT"
+
+      - name: Tofu plan
+        run: |
+          for ws in production-au-splose production-uk-splose production-au production-uk; do
+            echo "tofu plan $ws (simulated) -> no changes"
+          done
+
+      - name: Deployment note
+        env:
+          BASE: ${{ steps.base.outputs.base }}
+          COMMIT: ${{ steps.head.outputs.commit }}
+          SERVICES: ${{ steps.services.outputs.services }}
+        run: |
+          echo "Slack #deployments (simulated):"
+          echo "  Deployment ${BASE:0:7}..${COMMIT:0:7}"
+          echo "  Services: ${SERVICES//,/, }"
+
+      - name: Staging + red-devil
+        env:
+          SERVICES: ${{ steps.services.outputs.services }}
+        run: |
+          for env in staging red-devil; do
+            for s in ${SERVICES//,/ }; do echo "Deploy $s to $env (simulated) -> done"; done
+          done
+          echo "regression-run.yml dispatched (simulated)"
+          echo "Slack (simulated): @QA staging is ready, regression run started"
+
+      - name: Save release.json
+        env:
+          COMMIT: ${{ steps.head.outputs.commit }}
+          BASE: ${{ steps.base.outputs.base }}
+          SERVICES: ${{ steps.services.outputs.services }}
         run: |
           jq -n --arg commit "$COMMIT" --arg base "$BASE" --arg services "$SERVICES" --arg run "$GITHUB_RUN_ID" \
             '{stage:"staging", commit:$commit, base:$base, services:$services, prepare_run:$run}' > release.json
-          cat release.json
+          echo "Release saved"
+          echo "  stage        staging"
+          echo "  commit       $COMMIT"
+          echo "  base         $BASE"
+          echo "  services     ${SERVICES//,/, }"
+          echo "  prepare run  $GITHUB_RUN_ID"
+          echo
+          echo "Next: QA runs \"Artifact · 2 QA approve → Demo\" (run_id blank = this run)"
           {
-            echo "### Next: QA approves"
-            echo "Run **Artifact · 2 QA approve → Demo** with \`run_id = $GITHUB_RUN_ID\`"
-            echo '```'
-            echo "gh workflow run artifact-2-demo.yml -R $GITHUB_REPOSITORY -f run_id=$GITHUB_RUN_ID"
-            echo '```'
+            echo "### Release saved · stage staging"
+            echo "- commit: \`$COMMIT\`"
+            echo "- base: \`$BASE\`"
+            echo "- services: ${SERVICES//,/, }"
+            echo "- prepare run: $GITHUB_RUN_ID"
+            echo
+            echo "**Next:** QA runs *Artifact · 2 QA approve → Demo* (run_id blank = this run)"
           } >> "$GITHUB_STEP_SUMMARY"
+
       - uses: actions/upload-artifact@v4
         with:
           name: release
